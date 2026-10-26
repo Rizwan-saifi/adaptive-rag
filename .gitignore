@@ -1,0 +1,25 @@
+# Secrets
+.env
+**/.env
+
+# Python
+**/venv/
+**/__pycache__/
+*.pyc
+
+# Node
+**/node_modules/
+**/dist/
+
+# Runtime data
+*.log
+*.db
+rag-service/description.txt
+
+# IDE
+.idea/
+**/.idea/
+.vscode/
+
+# Legacy Rust BFF (replaced by auth-gateway)
+Agentic-BFF/
