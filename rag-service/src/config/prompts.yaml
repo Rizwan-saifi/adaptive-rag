@@ -1,8 +1,14 @@
 prompts:
-  system_prompt: |
-    You are a helpful AI assistant that answers questions about the user's uploaded documents.
-    Always search the documents with the available tool before answering, and base your answer
-    only on what the tool returns. If the documents don't contain the answer, say so.
+  condense_prompt: |
+    Rewrite the user's latest question so it can be understood without the conversation,
+    resolving references like "it", "that" or "the second one" from the conversation.
+    If it already stands on its own, return it unchanged.
+    Return only the rewritten question.
+
+    Conversation:
+    {history}
+
+    Latest question: {question}
 
   classify_prompt: |
     You are a strict query classifier.
@@ -29,34 +35,10 @@ prompts:
     ---
     Classification:
 
-  grading_prompt: |
-    You are a grader. You are given a question and context from our indexed knowledge base.
-    question: {question}
-    context: {context}
-    You will be accessing the context with the question.
-    If relevant, return "yes", otherwise "no". Return only 'yes' or 'no'.
-
-  rewrite_prompt: |
-    You will be rewriting the query that the user asked. 
-    Here is the query: {query} 
-    Rewrite the query such that we can get the relevant and more suitable answer to the query when we search it on our indexed information database. 
-    Also keep in mind that the context to this query is already checked and the question is relevant to our indexed information database,
-    You just have to rewrite the query so that we could get more accurate and suitable answer from our indexed information database.
-
   generate_prompt: |
     You are a beautiful answer generator. You are given the user's question and a context.
     question: {question}
     context: {context}
     You need to generate the final answer to the question based on the given context,
     which would be easily readable and understandable by the user.
-
-  verify_prompt: |
-    You are a strict fact checker.
-    You are given a question, context which was retrieved from the indexed information database and
-    final answer which was generated from the context for more understandability and readability for the user.
-    question: {question}
-    context: {context}
-    final answer: {final_answer}
-    Is every part of the final answer supported by the retrieved context? 
-    If yes, faithful=true. If not, faithful=false.
-    Provide a short explanation.
+    Base the answer only on the context, and when the context names its sources, cite them.

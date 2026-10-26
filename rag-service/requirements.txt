@@ -1,28 +1,33 @@
-langchain~=0.3.27
-langgraph~=0.5.4
-langchain_community~=0.3.27
-langchain_core~=0.3.72
-langchain_groq
-langchain_openai~=0.3.28
-faiss-cpu
-tavily-python
-bs4~=0.0.2
-requests~=2.32.4
-beautifulsoup4~=4.13.4
-pydantic~=2.11.7
-langchain-text-splitters~=0.3.9
-python-dotenv~=1.1.1
-PyYAML~=6.0.2
-fastapi
-uvicorn
-motor
-pymongo
-streamlit
-requests
-langchain-qdrant
-python-multipart
-pypdf
-langchain-anthropic<1
-langchain-google-genai<3
-fastembed
-PyJWT
+# API
+fastapi==0.162.0
+uvicorn==0.54.0
+python-multipart==0.0.32
+pydantic==2.11.10
+PyJWT==2.15.1
+python-dotenv==1.1.1
+PyYAML==6.0.3
+
+# Storage
+motor==3.7.1
+pymongo==4.19.0
+qdrant-client==1.20.0
+
+# RAG pipeline
+langchain-core==0.3.86
+langchain-community==0.3.31
+langchain-text-splitters==0.3.11
+langgraph==0.5.4
+langchain-qdrant==0.2.1
+langchain-tavily==0.2.17
+pypdf==6.21.2
+fastembed==0.9.1
+
+# Model providers (only the one selected by LLM_PROVIDER / EMBEDDING_PROVIDER is used)
+langchain-groq==0.3.8
+langchain-openai==0.3.35
+langchain-anthropic==0.3.22
+langchain-google-genai==2.1.12
+
+# UI
+streamlit==1.66.1
+requests==2.34.2

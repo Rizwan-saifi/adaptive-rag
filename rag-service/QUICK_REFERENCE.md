@@ -1,4 +1,34 @@
-# Quick Reference Guide - Code Formatting Standards
+# Quick Reference Guide
+
+A one-page cheat sheet: how to run things, then the coding standards from
+[CODE_STYLE_GUIDE.md](CODE_STYLE_GUIDE.md) in short form.
+
+## 🚀 Run
+
+```bash
+# From rag-service/
+python -m uvicorn src.main:app --port 8000          # RAG API (docs at /docs)
+python -m streamlit run streamlit_app/home.py       # UI on :8501
+
+# From the repository root
+docker compose up --build                           # whole stack
+.\start-all.ps1                                     # Windows, local processes
+```
+
+## 🗺️ Where Things Are
+
+| Need to change... | File |
+|---|---|
+| Endpoints | `src/api/routes.py` |
+| Pipeline (nodes, routing) | `src/rag/graph_builder.py` |
+| Prompts | `src/config/prompts.yaml` |
+| Vector store (Qdrant) | `src/rag/retriever_setup.py` |
+| Parsing / chunking | `src/rag/document_upload.py` |
+| Conversations | `src/memory/chat_history_mongo.py` |
+| Document records | `src/db/documents.py` |
+| Models / providers | `src/llms/provider.py` |
+| Settings (env vars) | `src/core/config.py` |
+| UI | `streamlit_app/pages/chat.py`, `streamlit_app/utils/api_client.py` |
 
 ## 📌 At a Glance
 
@@ -9,22 +39,22 @@ Module description explaining the file's purpose.
 """
 
 # Standard library
-import os
+import logging
 from typing import Optional
 
 # Third-party
 from pydantic import BaseModel
 
 # Local
-from src.config import Config
+from src.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
-class MyClass(BaseModel):
+class MyModel(BaseModel):
     """Class description."""
-    
-    def method(self) -> str:
-        """Method description."""
-        pass
+
+    name: str
 ```
 
 ## 🎯 Key Standards
@@ -34,268 +64,113 @@ class MyClass(BaseModel):
 def function(arg1: str, arg2: int = 10) -> dict:
     """
     One-line summary.
-    
-    Longer description with more context about what 
-    the function does and how to use it.
-    
+
+    Longer description when the summary isn't enough.
+
     Args:
         arg1: Description of arg1.
         arg2: Description of arg2. Defaults to 10.
-    
+
     Returns:
         Dictionary containing results.
-    
+
     Raises:
         ValueError: If arg1 is empty.
     """
-    pass
-```
-
-### Class Documentation
-```python
-class MyClass:
-    """Brief class description.
-    
-    Longer description of the class purpose,
-    how it's used, and important implementation
-    details.
-    """
-```
-
-### Module Documentation
-```python
-"""
-Short description of module purpose.
-
-Longer description of what's in this module,
-the main components, and how it's used in
-the larger system.
-"""
 ```
 
 ## 📋 Naming Conventions
 
 | Type | Convention | Example |
 |------|-----------|---------|
-| Functions | snake_case | `get_user_data()` |
-| Variables | snake_case | `user_session` |
+| Functions | snake_case | `load_and_split()` |
+| Variables | snake_case | `conversation_id` |
 | Classes | PascalCase | `ChatHistory` |
-| Constants | UPPER_CASE | `MAX_RETRIES = 3` |
-| Private | _snake_case | `_internal_method()` |
+| Constants | UPPER_CASE | `SUPPORTED_EXTENSIONS` |
+| Private | _snake_case | `_get_store()` |
 
 ## 🔧 Import Order
 
 1. **Standard library** (alphabetical)
-   ```python
-   import os
-   import sys
-   from datetime import datetime
-   from typing import Optional
-   ```
-
 2. **Third-party** (alphabetical)
-   ```python
-   import requests
-   from pydantic import BaseModel
-   from fastapi import FastAPI
-   ```
-
-3. **Local** (alphabetical)
-   ```python
-   from src.config import Config
-   from src.models import User
-   ```
+3. **Local** (`src.`, alphabetical)
 
 ## ✨ Common Patterns
 
-### Async Function
+### Authenticated route
 ```python
-async def fetch_data(session_id: str) -> List[dict]:
-    """
-    Fetch data asynchronously.
-    
-    Args:
-        session_id: Session identifier.
-    
-    Returns:
-        List of data dictionaries.
-    """
-    data = await db.get_data(session_id)
-    return data
+@router.get("/documents")
+async def list_documents(user_id: str = Depends(current_user)):
+    """The user's uploaded documents, newest first."""
+    return await documents.list_for_user(user_id)
 ```
 
-### Factory Class
+### Blocking work from an async route
 ```python
-class Factory:
-    """Factory for creating instances."""
-    
-    @classmethod
-    def create(cls, config: dict):
-        """
-        Create instance with configuration.
-        
-        Args:
-            config: Configuration dictionary.
-        
-        Returns:
-            New instance.
-        """
-        return cls(**config)
+chunks = await run_in_threadpool(load_and_split, filename, content)
+```
+
+### Graph node
+```python
+def retrieve(state: State):
+    """Fetch the user's document chunks relevant to the question."""
+    return {"documents": search(state["user_id"], state["question"])}
 ```
 
 ### Error Handling
 ```python
-def process(data: str) -> dict:
-    """
-    Process data with error handling.
-    
-    Args:
-        data: Data to process.
-    
-    Returns:
-        Processed result.
-    
-    Raises:
-        ValueError: If data is empty.
-        ProcessingError: If processing fails.
-    """
-    if not data:
-        raise ValueError("Data cannot be empty")
-    
-    try:
-        result = _process_internal(data)
-    except Exception as e:
-        raise ProcessingError(f"Failed to process: {e}")
-    
-    return result
+try:
+    await run_in_threadpool(add_documents, user_id, doc_id, chunks)
+except Exception:
+    logger.exception("Storing document chunks failed")
+    raise HTTPException(status_code=502, detail="Could not index the document, please try again.")
 ```
 
 ## 🚫 What NOT to Do
 
 ### ❌ Bad
 ```python
-# Missing docstring
+# Missing docstring and type hints, unscoped query
 def get_data(q):
-    x=db.find(q)
+    x=collection.find(q)
     return x
 
 # Commented code
 # old_function()
 
-# Mixed spacing
-data={  "key":"value"  }
-
-# Non-descriptive names
-def f(x,y):
-    return x+y
+# Blocking call inside an async route
+result = rag_graph.invoke(inputs)
 ```
 
 ### ✅ Good
 ```python
-def get_data(query: str) -> dict:
-    """Retrieve data for the given query."""
-    result = db.find(query)
-    return result
+async def get(user_id: str, doc_id: str) -> Optional[dict]:
+    """One of the user's documents, or None if they have no such document."""
+    return await collection.find_one({"user_id": user_id, "doc_id": doc_id}, {"_id": 0})
 
-# Data structure properly formatted
-data = {"key": "value"}
-
-# Descriptive function
-def calculate_total(price: float, tax: float) -> float:
-    """Calculate total price with tax."""
-    return price + tax
+result = await run_in_threadpool(rag_graph.invoke, inputs)
 ```
 
 ## 🔍 Before Submitting
 
-- [ ] Module has docstring
-- [ ] All functions have docstrings
-- [ ] All classes have docstrings
-- [ ] Imports are organized
+- [ ] Module, classes and functions have docstrings
+- [ ] Imports are organized, none unused
 - [ ] No commented-out code
-- [ ] No unused imports
 - [ ] Type hints present
-- [ ] PEP 8 compliant spacing
-- [ ] Meaningful variable names
+- [ ] Data is scoped to the authenticated user
+- [ ] Prompts are in `prompts.yaml`, settings in `src/core/config.py`
 
-## 🛠️ Quick Commands
+## 🛠️ Optional Formatting Tools
+
+Not installed by `requirements.txt`:
 
 ```bash
-# Format with Black
-black src/
-
-# Sort imports
-isort src/
-
-# Check style
-flake8 src/
-
-# Type checking
-mypy src/
-
-# Lint check
-pylint src/
-```
-
-## 📞 Common Issues
-
-### Issue: Long function
-**Solution**: Break into smaller functions
-```python
-# Instead of one 50-line function:
-def process():
-    # 50 lines...
-    
-# Do this:
-def process():
-    data = _load_data()
-    result = _validate_data(data)
-    return _format_result(result)
-```
-
-### Issue: Missing docstring
-**Solution**: Add docstring immediately
-```python
-# Add this:
-def function(param: str) -> str:
-    """Brief description of function purpose."""
-    pass
-```
-
-### Issue: Poor naming
-**Solution**: Use descriptive names
-```python
-# Bad
-def f(x):
-    return x * 2
-
-# Good
-def calculate_doubled_value(value: int) -> int:
-    """Calculate value multiplied by 2."""
-    return value * 2
+pip install black isort flake8
+black src/ && isort src/ && flake8 src/
 ```
 
 ## 📚 Full Guides
 
-For detailed information, see:
-- **CODE_STYLE_GUIDE.md** - Complete style guide
-- **FORMATTING_SUMMARY.md** - All changes made
-- **README_FORMATTING.md** - Overview and statistics
-- **VERIFICATION_CHECKLIST.md** - Complete checklist
-
-## 🎯 Remember
-
-> **Code is read much more often than it's written.**
-> Make it easy for others (and your future self) to understand.
-
-**Key Principles:**
-1. **Clarity** - Code should be easy to understand
-2. **Consistency** - Follow the same patterns
-3. **Completeness** - Document thoroughly
-4. **Correctness** - Handle errors properly
-
----
-
-**Last Updated**: March 5, 2026
-**Status**: Complete and production-ready ✓
-
+- **[CODE_STYLE_GUIDE.md](CODE_STYLE_GUIDE.md)** - Complete style guide
+- **[README.md](README.md)** - Service overview, API and configuration
+- **[DOCUMENTATION_INDEX.md](DOCUMENTATION_INDEX.md)** - All documentation

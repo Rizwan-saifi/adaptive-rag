@@ -1,67 +1,46 @@
 """
-Document upload and processing module.
+Document loading and chunking.
 """
 
 import os
 import tempfile
 
-from fastapi import UploadFile, File
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from src.rag.retriever_setup import retriever_chain
-from src.tools.common_tools import enhance_description_with_llm
+SUPPORTED_EXTENSIONS = (".pdf", ".txt")
 
 
-def documents(user_id: str, description: str, file: UploadFile = File(...)):
+def load_and_split(filename: str, content: bytes) -> list[Document]:
     """
-    Process and upload a document for RAG.
-
-    Validates file type, loads content, enhances description, chunks documents,
-    and stores them in the vector database.
+    Parse an uploaded PDF or TXT file and split it into chunks.
 
     Args:
-        user_id: Owner of the document.
-        description: User-provided document description.
-        file: The uploaded file (PDF or TXT).
+        filename: Original file name; its extension selects the parser.
+        content: The file's bytes.
 
     Returns:
-        Boolean indicating success of the upload process.
+        The document's chunks, with the file name as their source.
 
     Raises:
-        HTTPException: If file type is not supported or loading fails.
+        ValueError: If the file type is unsupported or the file can't be parsed.
     """
-    filename = file.filename
-    print(filename)
-    if not filename.endswith(".pdf") and not filename.endswith(".txt"):
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF and TXT files are supported"
-        )
+    extension = os.path.splitext(filename)[1].lower()
+    if extension not in SUPPORTED_EXTENSIONS:
+        raise ValueError("Only PDF and TXT files are supported")
 
-    file_bytes = file.file.read()
-
-    with tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix=os.path.splitext(filename)[1]
-    ) as tmp_file:
-        tmp_file.write(file_bytes)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as tmp_file:
+        tmp_file.write(content)
         tmp_path = tmp_file.name
 
-    if filename.endswith(".pdf"):
-        loader = PyPDFLoader(tmp_path)
-    else:
-        loader = TextLoader(tmp_path, encoding="utf-8")
-
     try:
-        docs = loader.load()
+        if extension == ".pdf":
+            docs = PyPDFLoader(tmp_path).load()
+        else:
+            docs = TextLoader(tmp_path, encoding="utf-8").load()
     except Exception as e:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error loading file: {e}"
-        )
+        raise ValueError(f"Could not read the file: {e}") from e
     finally:
         os.unlink(tmp_path)
 
@@ -69,14 +48,5 @@ def documents(user_id: str, description: str, file: UploadFile = File(...)):
     for doc in docs:
         doc.metadata["source"] = filename
 
-    # Enhance description using LLM
-    description_llm = enhance_description_with_llm(description)
-
-    # Split documents into chunks
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=150
-    )
-    chunks = splitter.split_documents(docs)
-
-    return retriever_chain(user_id, chunks, description_llm)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    return splitter.split_documents(docs)

@@ -1,85 +1,103 @@
 """
-Retriever setup and per-user vector store management.
+Vector store for users' uploaded documents, backed by Qdrant.
+
+All users share one collection; every chunk carries its owner's user_id and
+its document's doc_id in the metadata, and searches filter on user_id.
 """
 
+import contextlib
+import logging
 import threading
 
 from langchain_core.documents import Document
-from langchain_core.tools import create_retriever_tool
-from langchain_community.vectorstores import FAISS
+from langchain_qdrant import QdrantVectorStore
+from qdrant_client import QdrantClient, models
 
-from src.llms.provider import embeddings
+from src.core.config import settings
+from src.llms.provider import get_embeddings
 
-# In-memory FAISS index and document descriptions per user (lost on restart).
-# Qdrant support is currently disabled; see QDRANT_SETUP_GUIDE.md.
-_user_stores: dict[str, FAISS] = {}
-_user_descriptions: dict[str, list[str]] = {}
-# Uploads run in worker threads; serialize changes to the stores.
-_lock = threading.Lock()
+logger = logging.getLogger(__name__)
 
-# Shared placeholder for users who haven't uploaded anything yet.
-_empty_store: FAISS | None = None
+_store: QdrantVectorStore | None = None
+_store_lock = threading.Lock()
+# Embedded Qdrant isn't safe for concurrent use; a Qdrant server is.
+_ops_lock = contextlib.nullcontext() if settings.QDRANT_URL else threading.Lock()
 
 
-def retriever_chain(user_id: str, chunks: list[Document], description: str) -> bool:
+def _get_store() -> QdrantVectorStore:
+    """Connect to Qdrant on first use, creating the collection if needed."""
+    global _store
+    with _store_lock:
+        if _store is not None:
+            return _store
+
+        if settings.QDRANT_URL:
+            client = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY, timeout=30)
+        else:
+            client = QdrantClient(path=settings.QDRANT_PATH)
+
+        embeddings = get_embeddings()
+        collection = settings.QDRANT_COLLECTION
+        if not client.collection_exists(collection):
+            dimension = len(embeddings.embed_query("dimension probe"))
+            client.create_collection(
+                collection,
+                vectors_config=models.VectorParams(size=dimension, distance=models.Distance.COSINE),
+            )
+            logger.info("Created Qdrant collection '%s' (dimension %d)", collection, dimension)
+        # Payload indexes only exist on a Qdrant server; embedded mode doesn't use them.
+        # Creating an existing index is a no-op, so this also repairs an interrupted setup.
+        if settings.QDRANT_URL:
+            for field in ("metadata.user_id", "metadata.doc_id"):
+                client.create_payload_index(collection, field, field_schema=models.PayloadSchemaType.KEYWORD)
+
+        # Raises if the collection was created with a different embedding model.
+        _store = QdrantVectorStore(client=client, collection_name=collection, embedding=embeddings)
+        return _store
+
+
+def _match(**fields: str) -> models.Filter:
+    return models.Filter(must=[
+        models.FieldCondition(key=f"metadata.{key}", match=models.MatchValue(value=value))
+        for key, value in fields.items()
+    ])
+
+
+def add_documents(user_id: str, doc_id: str, chunks: list[Document]) -> None:
     """
-    Add document chunks to the user's vector store, creating it if needed.
+    Store a document's chunks for a user.
 
     Args:
-        user_id: Owner of the documents.
-        chunks: Document chunks to store.
-        description: Tool description of what the documents contain.
-
-    Returns:
-        Boolean indicating success of the operation.
+        user_id: Owner of the document.
+        doc_id: Identifies the document, for later deletion.
+        chunks: The document's chunks.
     """
-    try:
-        with _lock:
-            if user_id in _user_stores:
-                _user_stores[user_id].add_documents(chunks)
-            else:
-                _user_stores[user_id] = FAISS.from_documents(documents=chunks, embedding=embeddings)
-            _user_descriptions.setdefault(user_id, []).append(description)
-
-        print(f"Stored {len(chunks)} chunks for user '{user_id}'")
-        return True
-    except Exception as e:
-        print(f"Error storing documents in FAISS: {e}")
-        return False
+    for chunk in chunks:
+        chunk.metadata.update(user_id=user_id, doc_id=doc_id)
+    store = _get_store()
+    with _ops_lock:
+        store.add_documents(chunks)
+    logger.info("Stored %d chunks for user '%s'", len(chunks), user_id)
 
 
-def _get_empty_store() -> FAISS:
-    global _empty_store
-    if _empty_store is None:
-        _empty_store = FAISS.from_documents(
-            documents=[Document(
-                page_content="No documents have been uploaded yet. Please upload a document first.",
-                metadata={"source": "initialization"},
-            )],
-            embedding=embeddings,
-        )
-    return _empty_store
-
-
-def get_retriever(user_id: str):
+def search(user_id: str, query: str) -> list[Document]:
     """
-    Get a retriever tool over the given user's documents.
-
-    Users without uploads get a placeholder store that says so.
+    The user's chunks most similar to the query.
 
     Args:
         user_id: Whose documents to search.
-
-    Returns:
-        A LangChain retriever tool.
+        query: Text to search for.
     """
-    store = _user_stores.get(user_id) or _get_empty_store()
-    descriptions = _user_descriptions.get(user_id)
-    description = "\n".join(descriptions) if descriptions else "No documents uploaded yet."
+    store = _get_store()
+    with _ops_lock:
+        return store.similarity_search(query, k=settings.RETRIEVAL_K, filter=_match(user_id=user_id))
 
-    return create_retriever_tool(
-        store.as_retriever(),
-        "retriever_customer_uploaded_documents",
-        f"Use this tool **only** to answer questions about: {description}\n"
-        "Don't use this tool to answer anything else."
-    )
+
+def delete_document(user_id: str, doc_id: str) -> None:
+    """Delete all chunks of one of the user's documents."""
+    store = _get_store()
+    with _ops_lock:
+        store.client.delete(
+            store.collection_name,
+            points_selector=models.FilterSelector(filter=_match(user_id=user_id, doc_id=doc_id)),
+        )

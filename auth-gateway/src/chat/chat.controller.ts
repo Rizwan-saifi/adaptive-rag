@@ -9,12 +9,13 @@ import { ChatService } from './chat.service';
 export class ChatController {
   constructor(private readonly chat: ChatService) {}
 
-  // The JWT doubles as the chat session id, and is forwarded so the RAG
-  // service can identify the user.
+  // The JWT is forwarded so the RAG service can identify the user. Without a
+  // conversation_id, all of the user's messages share one 'default' conversation.
   @Post('chat')
   @HttpCode(200)
   async ask(@Body() body: ChatRequestDto, @Headers('authorization') auth: string) {
     const jwt = auth.replace(/^Bearer /, '');
-    return { answer: await this.chat.ask(body.query, jwt) };
+    const conversationId = body.conversation_id ?? 'default';
+    return { answer: await this.chat.ask(body.query, conversationId, jwt) };
   }
 }

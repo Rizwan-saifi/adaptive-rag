@@ -1,245 +1,199 @@
 """
 Graph builder module for the adaptive RAG system.
+
+    condense_question -> retrieve -> classify -+-> generate                      (documents answer it)
+                                               +-> general_llm                   (general knowledge)
+                                               +-> web_search -> generate        (needs fresh/external info)
+
+The classifier sees the retrieved chunks, so it also decides whether they are
+relevant enough to answer from.
 """
 
-from langchain_community.tools import TavilySearchResults
+import logging
+from typing import Literal
+
+from langchain_core.documents import Document
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import PromptTemplate
+from langchain_tavily import TavilySearch
 from langgraph.constants import START, END
 from langgraph.graph.state import StateGraph
 
-from src.rag.reAct_agent import get_agent_executor
-from src.rag.retriever_setup import get_retriever
 from src.config.settings import Config
-from src.llms.provider import llm, structured_llm
-from src.models.grade import Grade
+from src.core.config import settings
+from src.llms.provider import get_llm, message_text, structured_llm
 from src.models.route_identifier import RouteIdentifier
 from src.models.state import State
-from src.tools.graph_tools import routing_tool, doc_tool
+from src.rag.retriever_setup import search
 
+logger = logging.getLogger(__name__)
 config = Config()
+
+condense_prompt = PromptTemplate.from_template(config.prompt("condense_prompt"))
+classify_prompt = PromptTemplate.from_template(config.prompt("classify_prompt"))
+generate_prompt = PromptTemplate.from_template(config.prompt("generate_prompt"))
+
+# Nodes whose model output is the answer shown to the user (used for streaming)
+ANSWER_NODES = {"generate", "general_llm"}
+
+
+def format_documents(documents: list[Document]) -> str:
+    """Join chunks into one context string, labelling each with its source."""
+    parts = []
+    for doc in documents:
+        source = doc.metadata.get("source", "unknown")
+        page = doc.metadata.get("page_label")
+        label = f"{source}, page {page}" if page else source
+        parts.append(f"[source: {label}]\n{doc.page_content}")
+    return "\n\n".join(parts)
 
 
 # Node implementations
-def query_classifier(state: State):
+def condense_question(state: State):
     """
-    Classify the query to determine if it's related to indexed documents.
+    Rewrite a follow-up question so it can be understood without the conversation.
 
     Args:
         state (State): The current state of the graph.
 
     Returns:
-        dict: Updated state with route and latest_query.
+        dict: The standalone question.
     """
-    question = state["messages"][-1].content
-    retriever = get_retriever(state["user_id"])
-    context = retriever.invoke(question)
-    print("docs received from vector store")
-    print(context)
+    *history, latest = state["messages"]
+    question = message_text(latest.content)
+    if history:
+        transcript = "\n".join(f"{m.type}: {message_text(m.content)}" for m in history)
+        result = (condense_prompt | get_llm()).invoke({"history": transcript, "question": question})
+        question = message_text(result.content).strip() or question
+        logger.info("Standalone question: %s", question)
+    return {"question": question}
 
-    llm_with_structured_output = structured_llm(RouteIdentifier)
-    classify_prompt = PromptTemplate(
-        template=config.prompt("classify_prompt"),
-        input_variables=["question", "context"]
+
+def retrieve(state: State):
+    """
+    Fetch the user's document chunks relevant to the question.
+
+    Args:
+        state (State): The current state of the graph.
+
+    Returns:
+        dict: The retrieved chunks.
+    """
+    documents = search(state["user_id"], state["question"])
+    logger.info("Retrieved %d chunks", len(documents))
+    return {"documents": documents}
+
+
+def classify(state: State):
+    """
+    Decide whether the retrieved chunks answer the question, or where else to look.
+
+    Args:
+        state (State): The current state of the graph.
+
+    Returns:
+        dict: The route, and the chunks as context if they answer the question.
+    """
+    documents = state["documents"]
+    context = format_documents(documents) if documents else "No documents found."
+    result = (classify_prompt | structured_llm(RouteIdentifier)).invoke(
+        {"question": state["question"], "context": context}
     )
-    chain = classify_prompt | llm_with_structured_output
-    result = chain.invoke({"question": question, "context": context})
-    print("result received is in query classifier")
-    print(result.route)
-
-    return {
-        "messages": state["messages"],
-        "route": result.route,
-        "question": question,
-        "latest_query": question,
-        "rewrite_count": 0,
-    }
+    route = result.route
+    if route == "index" and not documents:
+        route = "general"
+    logger.info("Route: %s", route)
+    return {"route": route, "context": context if route == "index" else None}
 
 
 def general_llm(state: State):
     """
-    Fetch general common knowledge result from the LLM.
+    Answer from the model's general knowledge, with the conversation as context.
 
     Args:
         state (State): The current state of the graph.
 
     Returns:
-        dict: Updated messages from LLM.
+        dict: The answer message.
     """
-    result = llm.invoke(state["messages"])
-    print("inside general llm")
-    print(result)
-    return {"messages": result}
-
-
-def retriever_node(state: State):
-    """
-    Retrieve results from vector stores using the reAct agent.
-
-    Args:
-        state (State): The current state of the graph.
-
-    Returns:
-        dict: Updated messages with tool calls.
-    """
-    messages = state["latest_query"]
-    result = get_agent_executor(state["user_id"]).invoke({"input": messages})
-
-    # Extract tool calls
-    intermediate_steps = result.get("intermediate_steps", [])
-    tool_calls = []
-    if intermediate_steps:
-        for action, tool_result in intermediate_steps:
-            tool_calls.append({
-                "tool": action.tool,
-                "input": action.tool_input,
-            })
-
-    new_message = AIMessage(
-        content=result["output"],
-        additional_kwargs={"tool_calls": tool_calls},
-    )
-
-    return {
-        "messages": [new_message]
-    }
-
-
-def grade(state: State):
-    """
-    Grade the results retrieved from vector stores.
-
-    Args:
-        state (State): The current state of the graph.
-
-    Returns:
-        dict: Updated state with binary_score.
-    """
-    grading_prompt = PromptTemplate(
-        template=config.prompt("grading_prompt"),
-        input_variables=["question", "context"]
-    )
-    context = state["messages"][-1].content
-    question = state["latest_query"]
-
-    llm_with_grade = structured_llm(Grade)
-
-    chain_graded = grading_prompt | llm_with_grade
-    result = chain_graded.invoke({"question": question, "context": context})
-
-    print(result)
-    return {"messages": state["messages"], "binary_score": result.binary_score}
-
-
-def rewrite_query(state: State):
-    """
-    Rewrite the query to get better retrieval results.
-
-    Args:
-        state (State): State of the question.
-
-    Returns:
-        dict: Updated latest_query.
-    """
-    query = state["latest_query"]
-    rewrite_prompt = PromptTemplate(
-        template=config.prompt("rewrite_prompt"),
-        input_variables=["query"]
-    )
-    chain = rewrite_prompt | llm
-    result = chain.invoke({"query": query})
-    print(result)
-
-    return {
-        "latest_query": result.content,
-        "rewrite_count": (state.get("rewrite_count") or 0) + 1,
-    }
-
-
-def generate(state: State):
-    """
-    Generate the final answer for the user.
-
-    Args:
-        state (State): State of the question.
-
-    Returns:
-        dict: Generated response.
-    """
-    context = state["messages"][-1].content
-
-    generate_prompt = PromptTemplate(
-        template=config.prompt("generate_prompt"),
-        input_variables=["question", "context"]
-    )
-
-    generate_chain = generate_prompt | llm
-    result = generate_chain.invoke({"question": state["question"], "context": context})
-
-    return {"messages": [{"role": "assistant", "content": result.content}]}
+    result = get_llm().invoke(state["messages"])
+    return {"messages": [AIMessage(content=message_text(result.content))]}
 
 
 def web_search(state: State):
     """
-    Search the web for the rewritten query.
+    Search the web for the question.
 
     Args:
         state (State): The current state of the graph.
 
     Returns:
-        dict: Search results as messages.
+        dict: The search results as context, or no context if the search failed.
     """
-    # Initialize the Tavily tool
-    search_tool = TavilySearchResults()
+    try:
+        response = TavilySearch(max_results=5).invoke({"query": state["question"]})
+    except Exception:
+        logger.exception("Web search failed")
+        return {"context": None}
+    if "error" in response:
+        logger.warning("Web search failed: %s", response["error"])
+        return {"context": None}
 
-    # Search a query
-    result = search_tool.invoke(state["latest_query"])
-
-    contents = [item["content"] for item in result if "content" in item]
-    print(contents)
-
-    return {
-        "messages": [{"role": "assistant", "content": "\n\n".join(contents)}]
-    }
+    context = "\n\n".join(
+        f"[source: {item.get('url', 'web')}]\n{item['content']}"
+        for item in response.get("results", [])
+        if item.get("content")
+    )
+    return {"context": context or None}
 
 
-def not_found(state: State):
+def generate(state: State):
     """
-    Answer when retrieval keeps failing, instead of rewriting forever.
+    Generate the final answer from the context.
 
     Args:
         state (State): The current state of the graph.
 
     Returns:
-        dict: A message saying the documents don't cover the question.
+        dict: The answer message.
     """
-    return {"messages": [AIMessage(
-        content="I couldn't find information about that in your uploaded documents. "
-                "Try rephrasing your question, or upload a document that covers it."
-    )]}
+    result = (generate_prompt | get_llm()).invoke(
+        {"question": state["question"], "context": state["context"]}
+    )
+    return {"messages": [AIMessage(content=message_text(result.content))]}
+
+
+# Routing
+def route_after_classify(state: State) -> Literal["generate", "general_llm", "web_search"]:
+    """Follow the classifier's route; without a Tavily key, answer from general knowledge."""
+    if state["route"] == "index":
+        return "generate"
+    if state["route"] == "search" and settings.TAVILY_API_KEY:
+        return "web_search"
+    return "general_llm"
+
+
+def route_after_search(state: State) -> Literal["generate", "general_llm"]:
+    """Answer from the search results, or from general knowledge if the search found nothing."""
+    return "generate" if state.get("context") else "general_llm"
 
 
 # Build the graph
 graph = StateGraph(State)
 
-graph.add_node("query_analysis", query_classifier)
-graph.add_node("retriever", retriever_node)
-graph.add_node("grade", grade)
+graph.add_node("condense_question", condense_question)
+graph.add_node("retrieve", retrieve)
+graph.add_node("classify", classify)
 graph.add_node("generate", generate)
-graph.add_node("rewrite", rewrite_query)
-graph.add_node("web_search", web_search)
 graph.add_node("general_llm", general_llm)
-graph.add_node("not_found", not_found)
+graph.add_node("web_search", web_search)
 
-graph.add_edge(START, "query_analysis")
-graph.add_edge("web_search", "generate")
-graph.add_edge("retriever", "grade")
-graph.add_edge("rewrite", "retriever")
-graph.add_conditional_edges("query_analysis", routing_tool)
-graph.add_conditional_edges("grade", doc_tool)
+graph.add_edge(START, "condense_question")
+graph.add_edge("condense_question", "retrieve")
+graph.add_edge("retrieve", "classify")
+graph.add_conditional_edges("classify", route_after_classify)
+graph.add_conditional_edges("web_search", route_after_search)
 graph.add_edge("generate", END)
 graph.add_edge("general_llm", END)
-graph.add_edge("not_found", END)
 
-builder = graph.compile()
-
+rag_graph = graph.compile()

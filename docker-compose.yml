@@ -1,0 +1,72 @@
+# Whole stack: docker compose up --build, then open http://localhost:8501
+# Reads rag-service/.env and auth-gateway/.env (their JWT_SECRET values must match);
+# the settings below point the services at each other inside the compose network.
+services:
+  mongo:
+    image: mongo:8.0
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.20.0
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  rag-api:
+    build: ./rag-service
+    restart: unless-stopped
+    env_file: ./rag-service/.env
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      QDRANT_URL: http://qdrant:6333
+      FASTEMBED_CACHE_PATH: /models
+    volumes:
+      - model_cache:/models
+    depends_on:
+      mongo:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${RAG_API_PORT:-8000}:8000"
+
+  auth-gateway:
+    build: ./auth-gateway
+    restart: unless-stopped
+    env_file: ./auth-gateway/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      DB_PATH: /data/users.db
+      PYTHON_RAG_URL: http://rag-api:8000/rag/query
+    volumes:
+      - gateway_data:/data
+    depends_on:
+      - rag-api
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+
+  streamlit:
+    build: ./rag-service
+    restart: unless-stopped
+    command: ["python", "-m", "streamlit", "run", "streamlit_app/home.py",
+              "--server.address=0.0.0.0", "--server.port=8501"]
+    environment:
+      AUTH_GATEWAY_URL: http://auth-gateway:8080/api
+      RAG_API_URL: http://rag-api:8000
+    depends_on:
+      - auth-gateway
+    ports:
+      - "127.0.0.1:${STREAMLIT_PORT:-8501}:8501"
+
+volumes:
+  mongo_data:
+  qdrant_data:
+  model_cache:
+  gateway_data:

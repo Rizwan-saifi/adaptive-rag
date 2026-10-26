@@ -6,7 +6,7 @@ import logging
 
 import streamlit as st
 
-from utils.api_client import create_user, login_user, get_api_token
+from utils.api_client import ApiError, create_user, get_api_token, login_user
 
 # Hide sidebar for cleaner look
 hide_sidebar_style = """
@@ -27,9 +27,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="LangGraph Chat - Login")
+st.set_page_config(page_title="DocuMind - Login")
 
-st.title("🔐 Welcome to LangGraph Assistant")
+st.title("🧠 Welcome to DocuMind")
+
+# Message left by the chat page, e.g. when the session expired
+if notice := st.session_state.pop("notice", None):
+    st.warning(notice)
 
 # Step 1: Render login/signup form
 with st.form("auth_form"):
@@ -46,18 +50,16 @@ if submit:
     # survive a gateway restart.
     elif not (api_token := get_api_token()):
         st.error("Could not reach the auth service. Please try again.")
+    elif mode == "Create Account":
+        try:
+            create_user(username, password, api_token)
+            st.success("User created. Please log in.")
+        except ApiError as e:
+            st.error(f"User creation failed: {e}")
     else:
-        if mode == "Create Account":
-            success = create_user(username, password, api_token)
-            if success:
-                st.success("User created. Please log in.")
-            else:
-                st.error("User creation failed.")
-        else:
-            response = login_user(username, password, api_token)
-            if response and response.get("jwt"):
-                st.session_state["jwt_token"] = response["jwt"]
-                st.session_state["username"] = username
-                st.switch_page("pages/Chat.py")
-            else:
-                st.error("Login failed. Downstream API error: Received empty JWT token.")
+        try:
+            st.session_state["jwt_token"] = login_user(username, password, api_token)
+            st.session_state["username"] = username
+            st.switch_page("pages/chat.py")
+        except ApiError as e:
+            st.error(f"Login failed: {e}")

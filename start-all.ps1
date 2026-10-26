@@ -1,5 +1,7 @@
 # Starts the whole Adaptive RAG stack, each service in its own window.
 # MongoDB must already be running (it is installed as a Windows service here).
+# Documents are stored by an embedded Qdrant in rag-service/qdrant_data unless QDRANT_URL is set.
+# To run everything in Docker instead: docker compose up --build
 $root = $PSScriptRoot
 $rag = Join-Path $root "rag-service"
 $bff = Join-Path $root "auth-gateway"
@@ -10,7 +12,7 @@ Start-Process pwsh -WorkingDirectory $rag -ArgumentList "-NoExit", "-Command", "
 # 2. NestJS BFF (login/signup) on :8080
 Start-Process pwsh -WorkingDirectory $bff -ArgumentList "-NoExit", "-Command", "npm run start:prod"
 
-# 3. Streamlit UI on :8501 (run from project root so both import styles resolve)
+# 3. Streamlit UI on :8501
 Start-Process pwsh -WorkingDirectory $rag -ArgumentList "-NoExit", "-Command", ".\venv\Scripts\python.exe -m streamlit run streamlit_app/home.py"
 
 Write-Host "Starting... open http://localhost:8501 in a few seconds."

@@ -1,69 +1,63 @@
 # Adaptive RAG - Code Style Guide
 
 ## Overview
-This document provides guidelines for maintaining consistent code quality and style across the Adaptive RAG project.
+This document provides guidelines for maintaining consistent code quality and style across the RAG
+service (`src/`, `streamlit_app/`). The existing code is the best example; when in doubt,
+match the file you are editing.
 
 ## General Guidelines
 
 ### File Structure
 Every Python file should follow this structure:
 ```python
-"""Module docstring describing the file's purpose."""
+"""
+Module docstring describing the file's purpose.
+"""
 
 # Standard library imports
-import os
-import sys
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 
 # Third-party imports
-import requests
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends
 
 # Local imports
-from src.config.settings import Config
+from src.core.auth import current_user
+from src.core.config import settings
 ```
 
 ### Docstring Format
-All functions, classes, and modules should have docstrings in Google format:
+Functions, classes, and modules have docstrings in Google format. Short helpers can use a one-line
+docstring; add `Args`/`Returns`/`Raises` when they say something the signature doesn't.
 
 ```python
-def process_document(content: str, format: str = "text") -> dict:
+def load_and_split(filename: str, content: bytes) -> list[Document]:
     """
-    Process and validate document content.
-    
-    Supports multiple formats and performs validation on the content
-    before processing.
-    
+    Parse an uploaded PDF or TXT file and split it into chunks.
+
     Args:
-        content: The document content to process.
-        format: Output format ('text', 'json', 'xml'). Defaults to 'text'.
-    
+        filename: Original file name; its extension selects the parser.
+        content: The file's bytes.
+
     Returns:
-        A dictionary containing processed content and metadata.
-    
+        The document's chunks, with the file name as their source.
+
     Raises:
-        ValueError: If content is empty or format is unsupported.
-    
-    Examples:
-        >>> result = process_document("Hello World", "text")
-        >>> result['status']
-        'success'
+        ValueError: If the file type is unsupported or the file can't be parsed.
     """
-    pass
 ```
 
 ### Class Documentation
 ```python
-class DocumentProcessor(BaseModel):
-    """Process and validate documents for RAG system.
-    
-    This class handles document ingestion, chunking, and embedding
-    generation for the vector store.
-    """
-    
-    def __init__(self, config: Config):
-        """Initialize the processor with configuration."""
-        pass
+class ChatHistory:
+    """Messages of one of a user's conversations, stored in MongoDB."""
+
+    def __init__(self, user_id: str, conversation_id: str):
+        """
+        Args:
+            user_id: Owner of the conversation.
+            conversation_id: Identifies the conversation among the user's ones.
+        """
 ```
 
 ## Naming Conventions
@@ -71,28 +65,29 @@ class DocumentProcessor(BaseModel):
 ### Variables and Functions
 - Use `snake_case` for variables and functions
 - Use descriptive names (avoid single letters except for loop counters)
-- Prefix private methods with underscore `_private_method()`
+- Prefix module-private helpers and state with an underscore (`_get_store()`, `_store`)
 
 ```python
 # Good
-user_session = ChatHistory.get_session(user_id)
-def process_query(query: str) -> str:
-    pass
+history = ChatHistory(user_id, conversation_id)
+def condense_question(state: State):
+    ...
 
 # Avoid
-s = ChatHistory.get_session(uid)
-def process(q):
-    pass
+h = ChatHistory(u, c)
+def process(s):
+    ...
 ```
 
 ### Constants
 - Use `UPPER_CASE` for constants
-- Group related constants together
+- Settings that users may change belong in `src/core/config.py` (read from the environment), not in
+  module constants
 
 ```python
-MONGO_URL = "mongodb://localhost:27017"
-DB_NAME = "adaptive_rag"
-COLLECTION_NAME = "documents"
+SUPPORTED_EXTENSIONS = (".pdf", ".txt")
+ANSWER_NODES = {"generate", "general_llm"}
+MODEL_ERROR = "The model call failed, please try again."
 ```
 
 ### Classes
@@ -101,87 +96,67 @@ COLLECTION_NAME = "documents"
 
 ```python
 class ChatHistory:
-    pass
+    ...
 
-class MongoDBChatMessageHistory:
-    pass
+class RouteIdentifier(BaseModel):
+    ...
 ```
 
 ## Code Organization
 
 ### Import Order
-Follow this order:
+Follow this order, with a blank line between groups:
 1. Future imports
 2. Standard library imports (alphabetical)
 3. Third-party imports (alphabetical)
-4. Local application imports (alphabetical)
+4. Local application imports (`src.` / `utils.`, alphabetical)
 
 ### Spacing
 - Two blank lines between top-level functions and classes
 - One blank line between methods in a class
 - Blank lines to separate logical groups within functions
 
-```python
-class Document:
-    """Document model."""
-    
-    def __init__(self, content: str):
-        self.content = content
-    
-    def process(self):
-        """Process the document."""
-        # Implementation
-        pass
-    
-    def validate(self):
-        """Validate the document."""
-        # Implementation
-        pass
-```
-
 ## Type Hints
-Use type hints for all function parameters and return types:
+Use type hints for function parameters and return types. Built-in generics (`list[str]`) and
+`X | None` are fine; the code targets Python 3.13.
 
 ```python
-from typing import Optional, List, Dict
+def search(user_id: str, query: str) -> list[Document]:
+    """The user's chunks most similar to the query."""
 
-def get_documents(
-    session_id: str,
-    limit: int = 10
-) -> List[Dict[str, str]]:
-    """Retrieve documents for a session."""
-    pass
-
-def find_user(user_id: str) -> Optional[dict]:
-    """Find user by ID or return None."""
-    pass
+async def get(user_id: str, doc_id: str) -> Optional[dict]:
+    """One of the user's documents, or None if they have no such document."""
 ```
 
 ## Error Handling
 
-### Custom Exceptions
-Define exceptions at module level:
+### Raise plain exceptions in library code, translate them at the API boundary
+Lower layers raise standard exceptions with user-readable messages; routes turn them into HTTP errors.
 
 ```python
-class DocumentProcessingError(Exception):
-    """Raised when document processing fails."""
-    pass
+# src/rag/document_upload.py
+if extension not in SUPPORTED_EXTENSIONS:
+    raise ValueError("Only PDF and TXT files are supported")
 
-class VectorStoreError(Exception):
-    """Raised when vector store operations fail."""
-    pass
+# src/api/routes.py
+try:
+    chunks = await run_in_threadpool(load_and_split, filename, content)
+except ValueError as e:
+    raise HTTPException(status_code=400, detail=str(e))
 ```
 
 ### Exception Handling
-Always catch specific exceptions:
+Catch specific exceptions where you can. Where any failure of an external call (model, vector store,
+web search) must be handled, catch `Exception`, log it with `logger.exception`, and return a clear
+error; never swallow it silently.
 
 ```python
 # Good
 try:
-    docs = loader.load()
-except FileNotFoundError as e:
-    logger.error(f"File not found: {e}")
-    raise DocumentProcessingError(f"Could not load file: {e}")
+    result = await run_in_threadpool(rag_graph.invoke, inputs)
+except Exception:
+    logger.exception("RAG pipeline failed")
+    raise HTTPException(status_code=502, detail=MODEL_ERROR)
 
 # Avoid
 try:
@@ -191,48 +166,29 @@ except Exception:
 ```
 
 ## Logging
-Use the standard logging module:
+Use the standard logging module with a module-level logger and `%`-style arguments (formatted only if
+the message is logged):
 
 ```python
 import logging
 
 logger = logging.getLogger(__name__)
 
-logger.debug("Detailed debugging information")
-logger.info("Confirmation that things are working")
-logger.warning("Warning message")
-logger.error("Serious error message")
-logger.exception("Error with traceback")
+logger.info("Retrieved %d chunks", len(documents))
+logger.warning("Web search failed: %s", response["error"])
+logger.exception("Storing document chunks failed")   # inside except: includes the traceback
 ```
+
+Logging is configured once, in `src/main.py`. Don't log secrets or JWTs.
 
 ## Async Code
-When using async functions, follow these patterns:
+FastAPI routes and MongoDB access (Motor) are async. Model calls, the LangGraph graph, document
+parsing and Qdrant calls are blocking, so run them off the event loop:
 
 ```python
-async def fetch_data(session_id: str) -> List[dict]:
-    """Fetch data asynchronously."""
-    # Implementation
-    pass
-
-async def process_and_save(data: dict) -> bool:
-    """Process data and save to database."""
-    # Implementation
-    pass
-```
-
-## Testing Guidelines
-
-### Function Testing
-```python
-def test_process_document():
-    """Test document processing with valid content."""
-    result = process_document("test content")
-    assert result["status"] == "success"
-
-def test_process_document_invalid():
-    """Test document processing with invalid content."""
-    with pytest.raises(ValueError):
-        process_document("")
+result = await run_in_threadpool(rag_graph.invoke, inputs)
+async for mode, data in iterate_in_threadpool(stream):
+    ...
 ```
 
 ## Comment Guidelines
@@ -243,9 +199,8 @@ def test_process_document_invalid():
 - Document non-obvious workarounds
 
 ```python
-# Qdrant connection is established lazily to avoid connection
-# timeouts in test environments
-vectorstore = QdrantVectorStore.from_documents(...)
+# Embedded Qdrant isn't safe for concurrent use; a Qdrant server is.
+_ops_lock = contextlib.nullcontext() if settings.QDRANT_URL else threading.Lock()
 ```
 
 ### Bad Comments
@@ -254,11 +209,11 @@ vectorstore = QdrantVectorStore.from_documents(...)
 - Comments that restate code
 
 ```python
-# Bad: This comment just restates the code
+# Bad: restates the code
 count = count + 1  # Increment count
 
-# Good: Explains why it's done this way
-count = count + 1  # Increment after validation to maintain 1-based indexing
+# Good: explains a decision
+# Saved only once answered, so failures don't leave an unanswered question in the history.
 ```
 
 ## Code Complexity
@@ -266,108 +221,65 @@ count = count + 1  # Increment after validation to maintain 1-based indexing
 - Extract complex logic into helper functions
 - Use meaningful variable names to reduce need for comments
 
-```python
-# Good
-def validate_and_process(data: dict) -> dict:
-    """Validate and process data."""
-    if not is_valid_data(data):
-        raise ValueError("Invalid data format")
-    
-    processed = process_data(data)
-    return processed
-
-# Avoid
-def validate_and_process(data: dict) -> dict:
-    """Validate and process data."""
-    # 50 lines of validation logic here
-    # 40 lines of processing logic here
-    # Hard to understand and test
-    pass
-```
-
 ## Performance Considerations
 
 ### Async Operations
-Use async for I/O operations:
-
-```python
-# Good: Async database operations
-async def get_documents(session_id: str):
-    """Fetch documents asynchronously."""
-    docs = await db.collection.find({"session_id": session_id}).to_list()
-    return docs
-```
+Use async for database I/O, and keep blocking work off the event loop (see Async Code).
 
 ### Caching
-Consider caching for expensive operations:
+Build expensive clients once:
 
 ```python
-from functools import lru_cache
+from functools import cache
 
-@lru_cache(maxsize=128)
-def get_embedding_model():
-    """Get embedding model (cached)."""
-    return OpenAIEmbeddings()
+@cache
+def get_embeddings():
+    """The configured embeddings model, built on first use."""
 ```
+
+The Qdrant store is likewise created lazily on first use (`_get_store()` in `src/rag/retriever_setup.py`).
 
 ## Code Review Checklist
 Before submitting code:
-- ✓ All functions have docstrings
+- ✓ Functions, classes and modules have docstrings
 - ✓ Type hints present for parameters and returns
 - ✓ Follows naming conventions
-- ✓ No hardcoded values (use constants)
-- ✓ Proper error handling
+- ✓ Configurable values come from `settings`, not hardcoded
+- ✓ Proper error handling and logging
 - ✓ No unused imports or variables
-- ✓ PEP 8 compliant
 - ✓ No commented-out code
-- ✓ Proper logging in place
-- ✓ Tests pass
+- ✓ PEP 8 compliant
 
 ## Tools and Automation
 
-### Format Check
+Formatters and linters are not part of `requirements.txt`; if you use them, install them separately:
+
 ```bash
-# Check PEP 8 compliance
+pip install black isort flake8
+black src/ streamlit_app/
+isort src/ streamlit_app/
 flake8 src/
-
-# Auto-format code
-black src/
-
-# Sort imports
-isort src/
-```
-
-### Type Checking
-```bash
-# Check type hints
-mypy src/
-```
-
-### Linting
-```bash
-# Run pylint
-pylint src/
-
-# Run flake8 with specific checks
-flake8 src/ --select=E,W,F
 ```
 
 ## Project-Specific Guidelines
 
-### RAG System
-- Always document retriever tool instructions
-- Include proper error handling for vector store operations
-- Log intermediate steps for debugging
+### RAG Pipeline
+- Prompts live in `src/config/prompts.yaml`, not in code
+- Graph nodes take the `State` and return a dict with only the keys they change
+- Nodes whose output is shown to the user must be listed in `ANSWER_NODES` so they are streamed
+- Use `structured_llm(...)` for structured output and `message_text(...)` to read message content;
+  both handle provider differences
+- Every vector store operation filters on the user's `user_id`
 
 ### Streamlit Applications
-- Keep UI logic separate from business logic
-- Use session state consistently
-- Document page configuration
+- Keep backend calls in `streamlit_app/utils/api_client.py`; pages call its functions
+- Raise `ApiError` with a user-readable message; `SessionExpired` sends the user back to login
+- Use session state consistently (`jwt_token`, `conversation_id`, `chat_history`)
 
 ### API Routes
-- Use proper HTTP status codes
-- Document request/response schemas
-- Add proper error messages
+- Protect every route with `user_id: str = Depends(current_user)` and scope all data to that user
+- Validate input with Pydantic models / `Form(...)` constraints
+- Use proper HTTP status codes (400 bad input, 401 auth, 404 not found, 413 too large, 502 upstream failure)
 
 ## Version Control
 - Use descriptive commit messages
@@ -378,4 +290,3 @@ flake8 src/ --select=E,W,F
   - `refactor: reorganize code`
   - `docs: update documentation`
   - `style: formatting changes`
-

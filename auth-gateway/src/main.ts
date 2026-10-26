@@ -1,15 +1,14 @@
 import 'reflect-metadata';
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { configureApp } from './app.setup';
 import { config } from './config';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.setGlobalPrefix('api');
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
-  app.enableShutdownHooks();
-  await app.listen(config.port, '127.0.0.1');
-  Logger.log(`Auth gateway listening on http://127.0.0.1:${config.port}/api`, 'Bootstrap');
+  configureApp(app);
+  await app.listen(config.port, config.host);
+  Logger.log(`Auth gateway listening on http://${config.host}:${config.port}/api`, 'Bootstrap');
 }
 bootstrap();

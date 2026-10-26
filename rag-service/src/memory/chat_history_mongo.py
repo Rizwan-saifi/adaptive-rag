@@ -2,28 +2,30 @@
 Chat history storage using MongoDB backend.
 """
 
-from datetime import datetime
-from typing import List
+from datetime import datetime, timezone
+from typing import List, Optional
 
-from langchain_core.chat_history import BaseChatMessageHistory
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, messages_from_dict
 
 from src.db.mongo_client import db
 
 collection = db["chat_history"]
 
 
-class MongoDBChatMessageHistory(BaseChatMessageHistory):
-    """Chat history backed by MongoDB."""
+class ChatHistory:
+    """Messages of one of a user's conversations, stored in MongoDB."""
 
-    def __init__(self, session_id: str):
+    def __init__(self, user_id: str, conversation_id: str):
         """
-        Initialize chat history for a session.
-
         Args:
-            session_id: Unique session identifier.
+            user_id: Owner of the conversation.
+            conversation_id: Identifies the conversation among the user's ones.
         """
-        self.session_id = session_id
+        self.user_id = user_id
+        self.conversation_id = conversation_id
+
+    def _filter(self) -> dict:
+        return {"user_id": self.user_id, "conversation_id": self.conversation_id}
 
     async def add_message(self, message: BaseMessage) -> None:
         """
@@ -33,60 +35,60 @@ class MongoDBChatMessageHistory(BaseChatMessageHistory):
             message: The message to save.
         """
         await collection.insert_one({
-            "session_id": self.session_id,
+            **self._filter(),
             "type": message.type,
             "content": message.content,
-            "additional_kwargs": message.additional_kwargs,
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
         })
 
-    async def get_messages(self) -> List[BaseMessage]:
+    async def get_messages(self, limit: Optional[int] = None) -> List[BaseMessage]:
         """
-        Load all messages for a session from MongoDB.
+        Load the conversation's messages, oldest first.
+
+        Args:
+            limit: Only return this many of the most recent messages.
 
         Returns:
             List of messages in chronological order.
         """
-        from langchain_core.messages import messages_from_dict
-
+        if limit is not None and limit <= 0:
+            return []
         # _id breaks ties between messages saved within the same millisecond
-        cursor = collection.find({"session_id": self.session_id}).sort([("timestamp", 1), ("_id", 1)])
-        docs = await cursor.to_list(length=1000)
+        cursor = collection.find(self._filter()).sort([("timestamp", -1), ("_id", -1)])
+        if limit is not None:
+            cursor = cursor.limit(limit)
+        docs = list(reversed(await cursor.to_list(length=None)))
 
-        # Convert to BaseMessage objects
         return messages_from_dict([
-            {
-                "type": d["type"],
-                "data": {
-                    "content": d["content"],
-                    "additional_kwargs": d.get("additional_kwargs", {}),
-                }
-            }
+            {"type": d["type"], "data": {"content": d["content"]}}
             for d in docs
         ])
 
-    async def clear(self) -> None:
-        """Delete all messages for a session."""
-        await collection.delete_many({"session_id": self.session_id})
-
-
-class ChatHistory:
-    """Factory for MongoDB-backed chat history."""
-
-    @classmethod
-    def get_session_history(
-        cls,
-        session_id: str,
-        config: dict = None
-    ) -> MongoDBChatMessageHistory:
+    @staticmethod
+    async def list_conversations(user_id: str, limit: int = 50) -> List[dict]:
         """
-        Get or create chat history for a session.
-
-        Args:
-            session_id: Unique session identifier.
-            config: Optional configuration dictionary.
+        The user's conversations, most recently active first.
 
         Returns:
-            MongoDBChatMessageHistory instance for the session.
+            Dicts with conversation_id, title (the first question) and updated_at.
         """
-        return MongoDBChatMessageHistory(session_id)
+        pipeline = [
+            {"$match": {"user_id": user_id}},
+            {"$sort": {"timestamp": 1, "_id": 1}},
+            {"$group": {
+                "_id": "$conversation_id",
+                "title": {"$first": "$content"},
+                "updated_at": {"$last": "$timestamp"},
+            }},
+            {"$sort": {"updated_at": -1}},
+            {"$limit": limit},
+        ]
+        return [
+            {"conversation_id": d["_id"], "title": d["title"], "updated_at": d["updated_at"]}
+            async for d in collection.aggregate(pipeline)
+        ]
+
+    @staticmethod
+    async def ensure_indexes() -> None:
+        """Create the indexes the queries above rely on."""
+        await collection.create_index([("user_id", 1), ("conversation_id", 1), ("timestamp", 1)])
