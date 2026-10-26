@@ -11,11 +11,12 @@ GROQ_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, ANTHROPIC_API_KEY.
 """
 
 import os
+from functools import cache
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import RunnableLambda
 
 load_dotenv()
@@ -37,20 +38,27 @@ DEFAULT_EMBEDDING_MODELS = {
 }
 
 
-def _text_only(message: AIMessage) -> AIMessage:
-    """Collapse list-style content (e.g. thinking + text blocks) into plain text."""
-    # Tool-call turns are sent back to the model, which needs their thinking blocks intact.
-    if isinstance(message.content, str) or message.tool_calls:
-        return message
-    text = "".join(
+def message_text(content) -> str:
+    """Plain text of a message's content, dropping non-text blocks such as thinking."""
+    if isinstance(content, str):
+        return content
+    return "".join(
         block if isinstance(block, str) else block.get("text", "")
-        for block in message.content
+        for block in content
         if isinstance(block, str) or block.get("type") == "text"
     )
-    return message.model_copy(update={"content": text})
 
 
-def _build_llm():
+def _text_only(message):
+    """Collapse list-style content (e.g. thinking + text blocks) into plain text."""
+    if isinstance(message.content, str):
+        return message
+    return message.model_copy(update={"content": message_text(message.content)})
+
+
+@cache
+def get_llm():
+    """The configured chat model, built on first use."""
     model = os.getenv("LLM_MODEL") or DEFAULT_LLM_MODELS.get(LLM_PROVIDER)
 
     if LLM_PROVIDER == "groq":
@@ -79,6 +87,12 @@ def _build_llm():
                 ]
                 return result
 
+            def _stream(self, *args, **kwargs):
+                for chunk in super()._stream(*args, **kwargs):
+                    yield ChatGenerationChunk(
+                        message=_text_only(chunk.message), generation_info=chunk.generation_info
+                    )
+
         return TextChatAnthropic(model=model, max_tokens=16000)
 
     raise ValueError(
@@ -86,7 +100,9 @@ def _build_llm():
     )
 
 
-def _build_embeddings():
+@cache
+def get_embeddings():
+    """The configured embeddings model, built on first use."""
     model = os.getenv("EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODELS.get(EMBEDDING_PROVIDER)
 
     if EMBEDDING_PROVIDER == "local":
@@ -107,10 +123,6 @@ def _build_embeddings():
     )
 
 
-llm = _build_llm()
-embeddings = _build_embeddings()
-
-
 def structured_llm(schema):
     """
     Return a runnable that produces an instance of the given Pydantic schema.
@@ -120,7 +132,7 @@ def structured_llm(schema):
     ask for JSON in the prompt and parse it instead.
     """
     if LLM_PROVIDER != "anthropic":
-        return llm.with_structured_output(schema)
+        return get_llm().with_structured_output(schema)
 
     parser = PydanticOutputParser(pydantic_object=schema)
     instructions = HumanMessage(content=parser.get_format_instructions() + "\nReturn only the JSON.")
@@ -128,4 +140,4 @@ def structured_llm(schema):
     def add_instructions(prompt_value):
         return prompt_value.to_messages() + [instructions]
 
-    return RunnableLambda(add_instructions) | llm | parser
+    return RunnableLambda(add_instructions) | get_llm() | parser

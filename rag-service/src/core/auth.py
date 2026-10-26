@@ -23,4 +23,6 @@ def current_user(authorization: str = Header(None)) -> str:
         raise HTTPException(status_code=401, detail="Session expired, please log in again")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+    if not isinstance(claims.get("sub"), str) or not claims["sub"]:
+        raise HTTPException(status_code=401, detail="Invalid token")
     return claims["sub"]
