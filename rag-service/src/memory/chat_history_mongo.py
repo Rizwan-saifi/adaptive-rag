@@ -49,7 +49,8 @@ class MongoDBChatMessageHistory(BaseChatMessageHistory):
         """
         from langchain_core.messages import messages_from_dict
 
-        cursor = collection.find({"session_id": self.session_id}).sort("timestamp", 1)
+        # _id breaks ties between messages saved within the same millisecond
+        cursor = collection.find({"session_id": self.session_id}).sort([("timestamp", 1), ("_id", 1)])
         docs = await cursor.to_list(length=1000)
 
         # Convert to BaseMessage objects

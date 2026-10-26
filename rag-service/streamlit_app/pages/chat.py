@@ -44,6 +44,11 @@ if st.session_state.show_logout_confirm:
         if st.button("❌ Cancel"):
             st.session_state.show_logout_confirm = False
 
+# Check authentication before anything can call the backend
+if "jwt_token" not in st.session_state:
+    st.warning("Please login first.")
+    st.stop()
+
 st.title("💬 LangGraph Chat")
 
 # Document upload section
@@ -68,7 +73,7 @@ with st.sidebar:
         if file_description:
             if file_key not in st.session_state.uploaded_files:
                 # Upload file if not already uploaded
-                success = document_upload_rag(uploaded_file, file_description)
+                success = document_upload_rag(uploaded_file, file_description, st.session_state["jwt_token"])
                 if success:
                     st.success(f"Uploaded: {uploaded_file.name}")
                     st.session_state.uploaded_files[file_key] = True
@@ -78,11 +83,6 @@ with st.sidebar:
                 st.info(f"Uploaded: {uploaded_file.name}")
         else:
             st.warning("Please describe your document before uploading.")
-
-# Check authentication
-if "session_id" not in st.session_state:
-    st.warning("Please login first.")
-    st.stop()
 
 # Initialize chat history
 if "chat_history" not in st.session_state:

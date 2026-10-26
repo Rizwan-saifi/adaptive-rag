@@ -32,9 +32,9 @@ def query_classifier(state: State):
         dict: Updated state with route and latest_query.
     """
     question = state["messages"][-1].content
-    retriever = get_retriever()
+    retriever = get_retriever(state["user_id"])
     context = retriever.invoke(question)
-    print("docs received from Qdrant")
+    print("docs received from vector store")
     print(context)
 
     llm_with_structured_output = structured_llm(RouteIdentifier)
@@ -47,7 +47,13 @@ def query_classifier(state: State):
     print("result received is in query classifier")
     print(result.route)
 
-    return {"messages": state["messages"], "route": result.route, "latest_query": question}
+    return {
+        "messages": state["messages"],
+        "route": result.route,
+        "question": question,
+        "latest_query": question,
+        "rewrite_count": 0,
+    }
 
 
 def general_llm(state: State):
@@ -77,7 +83,7 @@ def retriever_node(state: State):
         dict: Updated messages with tool calls.
     """
     messages = state["latest_query"]
-    result = get_agent_executor().invoke({"input": messages})
+    result = get_agent_executor(state["user_id"]).invoke({"input": messages})
 
     # Extract tool calls
     intermediate_steps = result.get("intermediate_steps", [])
@@ -145,7 +151,8 @@ def rewrite_query(state: State):
     print(result)
 
     return {
-        "latest_query": result.content
+        "latest_query": result.content,
+        "rewrite_count": (state.get("rewrite_count") or 0) + 1,
     }
 
 
@@ -163,11 +170,11 @@ def generate(state: State):
 
     generate_prompt = PromptTemplate(
         template=config.prompt("generate_prompt"),
-        input_variables=["context"]
+        input_variables=["question", "context"]
     )
 
     generate_chain = generate_prompt | llm
-    result = generate_chain.invoke({"context": context})
+    result = generate_chain.invoke({"question": state["question"], "context": context})
 
     return {"messages": [{"role": "assistant", "content": result.content}]}
 
@@ -196,6 +203,22 @@ def web_search(state: State):
     }
 
 
+def not_found(state: State):
+    """
+    Answer when retrieval keeps failing, instead of rewriting forever.
+
+    Args:
+        state (State): The current state of the graph.
+
+    Returns:
+        dict: A message saying the documents don't cover the question.
+    """
+    return {"messages": [AIMessage(
+        content="I couldn't find information about that in your uploaded documents. "
+                "Try rephrasing your question, or upload a document that covers it."
+    )]}
+
+
 # Build the graph
 graph = StateGraph(State)
 
@@ -206,6 +229,7 @@ graph.add_node("generate", generate)
 graph.add_node("rewrite", rewrite_query)
 graph.add_node("web_search", web_search)
 graph.add_node("general_llm", general_llm)
+graph.add_node("not_found", not_found)
 
 graph.add_edge(START, "query_analysis")
 graph.add_edge("web_search", "generate")
@@ -215,6 +239,7 @@ graph.add_conditional_edges("query_analysis", routing_tool)
 graph.add_conditional_edges("grade", doc_tool)
 graph.add_edge("generate", END)
 graph.add_edge("general_llm", END)
+graph.add_edge("not_found", END)
 
 builder = graph.compile()
 

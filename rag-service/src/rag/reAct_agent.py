@@ -21,13 +21,16 @@ prompt = ChatPromptTemplate.from_messages([
 ])
 
 
-def get_agent_executor() -> AgentExecutor:
+def get_agent_executor(user_id: str) -> AgentExecutor:
     """
-    Build the agent with a retriever over the current vector store.
+    Build the agent with a retriever over the user's vector store.
 
     Built per request so documents uploaded after startup are searchable.
+
+    Args:
+        user_id: Whose documents the agent may search.
     """
-    tools = [get_retriever()]
+    tools = [get_retriever(user_id)]
     agent = RunnableMultiActionAgent(
         runnable=create_tool_calling_agent(llm, tools, prompt),
         # invoke rather than stream, so provider wrappers see whole responses

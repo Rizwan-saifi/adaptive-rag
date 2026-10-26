@@ -14,4 +14,8 @@ class State(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     binary_score: Optional[str]
     route: Optional[str]
+    # The user's question as asked; latest_query may be a rewrite of it
+    question: Optional[str]
     latest_query: Optional[str]
+    user_id: str
+    rewrite_count: Optional[int]

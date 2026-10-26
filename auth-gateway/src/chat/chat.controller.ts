@@ -9,11 +9,12 @@ import { ChatService } from './chat.service';
 export class ChatController {
   constructor(private readonly chat: ChatService) {}
 
-  // The JWT doubles as the chat session id, as in the Rust version.
+  // The JWT doubles as the chat session id, and is forwarded so the RAG
+  // service can identify the user.
   @Post('chat')
   @HttpCode(200)
   async ask(@Body() body: ChatRequestDto, @Headers('authorization') auth: string) {
-    const sessionId = auth.replace(/^Bearer /, '');
-    return { answer: await this.chat.ask(body.query, sessionId) };
+    const jwt = auth.replace(/^Bearer /, '');
+    return { answer: await this.chat.ask(body.query, jwt) };
   }
 }

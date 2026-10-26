@@ -30,8 +30,6 @@ def create_user(username: str, password: str, api_token: str) -> bool:
         "X-API-TOKEN": api_token,
         "Content-Type": "application/json"
     }
-    logger.info("API Token received: %s", api_token)
-
     try:
         response = requests.post(
             f"{RUST_BASE_URL}/create_user",
@@ -42,10 +40,6 @@ def create_user(username: str, password: str, api_token: str) -> bool:
         logger.info("Calling /create_user, status code: %s", response.status_code)
 
         if response.status_code == 200:
-            try:
-                logger.debug("Create user response: %s", response.json())
-            except ValueError:
-                logger.warning("Create user returned non-JSON response")
             return True
         else:
             logger.error(
@@ -81,7 +75,7 @@ def login_user(username: str, password: str, api_token: str) -> dict:
         json={"username": username, "password": password},
         headers=headers,
     )
-    logger.info("Calling /login, status code: %s", response.json())
+    logger.info("Calling /login, status code: %s", response.status_code)
 
     if response.status_code == 200:
         return response.json()
@@ -96,8 +90,12 @@ def get_api_token() -> str:
     Returns:
         API token string if successful, None otherwise.
     """
-    response = requests.post(f"{RUST_BASE_URL}/init")
-    logger.info("Calling /init, status code: %s", response.json())
+    try:
+        response = requests.post(f"{RUST_BASE_URL}/init", timeout=10)
+    except requests.RequestException as e:
+        logger.error("Request to /init failed: %s", e)
+        return None
+    logger.info("Calling /init, status code: %s", response.status_code)
 
     if response.status_code == 200:
         return response.json()["api_token"]
@@ -105,13 +103,13 @@ def get_api_token() -> str:
     return None
 
 
-def query_backend(query: str, session_id: str) -> str:
+def query_backend(query: str, jwt_token: str) -> str:
     """
     Send a query to the RAG backend.
 
     Args:
         query: The user's query text.
-        session_id: Session identifier for tracking conversation.
+        jwt_token: Login token; authenticates the user and identifies the chat session.
 
     Returns:
         Response text from the backend or error message.
@@ -121,29 +119,34 @@ def query_backend(query: str, session_id: str) -> str:
 
     response = requests.post(
         url,
-        json={"query": query, "session_id": session_id},
+        json={"query": query, "session_id": jwt_token},
+        headers={"Authorization": f"Bearer {jwt_token}"},
         allow_redirects=False
     )
 
     if response.status_code == 200:
         return response.json()["result"]["content"]
+    elif response.status_code == 401:
+        return "Your session has expired. Please log out and log in again."
     else:
         return f"Error: {response.status_code} - {response.text}"
 
 
-def document_upload_rag(file, description: str) -> bool:
+def document_upload_rag(file, description: str, jwt_token: str) -> bool:
     """
     Upload a document to the RAG system.
 
     Args:
         file: File object to upload.
         description: Description of the document.
+        jwt_token: Login token identifying the document's owner.
 
     Returns:
         True if upload succeeds, False otherwise.
     """
     headers = {
-        "X-Description": description
+        "X-Description": description,
+        "Authorization": f"Bearer {jwt_token}",
     }
     url = f"{PYTHON_BASE_URL}/rag/documents/upload"
 

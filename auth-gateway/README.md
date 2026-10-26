@@ -27,5 +27,5 @@ Listens on `http://127.0.0.1:8080/api`.
 
 ## Configuration
 
-See `.env.example`. Set `JWT_SECRET` to a real secret; the built-in default is for local development only.
+See `.env.example`. `JWT_SECRET` is required and must match the RAG service's `JWT_SECRET`.
 Passwords are stored as Argon2id hashes in SQLite (`DB_PATH`).

@@ -1,121 +1,85 @@
 """
-Retriever setup and vector store configuration.
+Retriever setup and per-user vector store management.
 """
 
-import os
+import threading
 
 from langchain_core.documents import Document
 from langchain_core.tools import create_retriever_tool
-# from langchain_qdrant import QdrantVectorStore
 from langchain_community.vectorstores import FAISS
 
-from src.core.config import settings
 from src.llms.provider import embeddings
 
-# Global variable to store the FAISS vectorstore instance
-# This ensures get_retriever() can access documents stored by retriever_chain()
-_faiss_vectorstore = None
+# In-memory FAISS index and document descriptions per user (lost on restart).
+# Qdrant support is currently disabled; see QDRANT_SETUP_GUIDE.md.
+_user_stores: dict[str, FAISS] = {}
+_user_descriptions: dict[str, list[str]] = {}
+# Uploads run in worker threads; serialize changes to the stores.
+_lock = threading.Lock()
+
+# Shared placeholder for users who haven't uploaded anything yet.
+_empty_store: FAISS | None = None
 
 
-def retriever_chain(chunks: list[Document]):
+def retriever_chain(user_id: str, chunks: list[Document], description: str) -> bool:
     """
-    Initialize and store documents in FAISS vector database.
+    Add document chunks to the user's vector store, creating it if needed.
 
     Args:
-        chunks: List of document chunks to store.
+        user_id: Owner of the documents.
+        chunks: Document chunks to store.
+        description: Tool description of what the documents contain.
 
     Returns:
         Boolean indicating success of the operation.
     """
-    global _faiss_vectorstore
-
     try:
-        # Commenting out Qdrant code for temporary FAISS usage
-        # vectorstore = QdrantVectorStore.from_documents(
-        #     documents=chunks,
-        #     embedding=embeddings,
-        #     url=settings.QDRANT_URL,
-        #     api_key=settings.QDRANT_API_KEY,
-        #     collection_name=settings.CODE_COLLECTION,
-        # )
-        vectorstore = FAISS.from_documents(
-            documents=chunks,
-            embedding=embeddings
-        )
+        with _lock:
+            if user_id in _user_stores:
+                _user_stores[user_id].add_documents(chunks)
+            else:
+                _user_stores[user_id] = FAISS.from_documents(documents=chunks, embedding=embeddings)
+            _user_descriptions.setdefault(user_id, []).append(description)
 
-        # Store the vectorstore globally so get_retriever() can access it
-        _faiss_vectorstore = vectorstore
-
-        print("FAISS vector store initialized with documents")
-        print(f"Vectorstore contains {len(chunks)} document chunks")
+        print(f"Stored {len(chunks)} chunks for user '{user_id}'")
         return True
     except Exception as e:
         print(f"Error storing documents in FAISS: {e}")
         return False
 
 
-def get_retriever():
-    """
-    Get a retriever tool connected to the FAISS vector store.
+def _get_empty_store() -> FAISS:
+    global _empty_store
+    if _empty_store is None:
+        _empty_store = FAISS.from_documents(
+            documents=[Document(
+                page_content="No documents have been uploaded yet. Please upload a document first.",
+                metadata={"source": "initialization"},
+            )],
+            embedding=embeddings,
+        )
+    return _empty_store
 
-    Returns the retriever tool that can search documents stored by retriever_chain().
-    If no documents have been uploaded yet, creates a retriever with a dummy document.
+
+def get_retriever(user_id: str):
+    """
+    Get a retriever tool over the given user's documents.
+
+    Users without uploads get a placeholder store that says so.
+
+    Args:
+        user_id: Whose documents to search.
 
     Returns:
-        A LangChain retriever tool configured for the vector store.
-
-    Raises:
-        Exception: If vector store initialization fails.
+        A LangChain retriever tool.
     """
-    global _faiss_vectorstore
+    store = _user_stores.get(user_id) or _get_empty_store()
+    descriptions = _user_descriptions.get(user_id)
+    description = "\n".join(descriptions) if descriptions else "No documents uploaded yet."
 
-    try:
-        # Commenting out Qdrant code for temporary FAISS usage
-        # vectorstore = QdrantVectorStore.from_documents(
-        #     documents=[],
-        #     embedding=embeddings,
-        #     url=settings.QDRANT_URL,
-        #     api_key=settings.QDRANT_API_KEY,
-        #     collection_name=settings.CODE_COLLECTION,
-        # )
-        # retriever = vectorstore.as_retriever()
-
-        # Use the global vectorstore if it exists (documents have been uploaded)
-        if _faiss_vectorstore is not None:
-            retriever = _faiss_vectorstore.as_retriever()
-            print("Using existing FAISS vectorstore with uploaded documents")
-        else:
-            # No documents uploaded yet, create dummy for initialization
-            print("No documents uploaded yet, creating dummy vectorstore")
-            from langchain_core.documents import Document as LangChainDocument
-
-            dummy_doc = LangChainDocument(
-                page_content="No documents have been uploaded yet. Please upload a document first.",
-                metadata={"source": "initialization"}
-            )
-
-            _faiss_vectorstore = FAISS.from_documents(
-                documents=[dummy_doc],
-                embedding=embeddings
-            )
-            retriever = _faiss_vectorstore.as_retriever()
-
-        # Load document description
-        if os.path.exists("description.txt"):
-            with open("description.txt", "r", encoding="utf-8") as f:
-                description = f.read()
-        else:
-            description = None
-
-        retriever_tool = create_retriever_tool(
-            retriever,
-            "retriever_customer_uploaded_documents",
-            f"Use this tool **only** to answer questions about: {description}\n"
-            "Don't use this tool to answer anything else."
-        )
-
-        return retriever_tool
-
-    except Exception as e:
-        print(f"Error initializing retriever: {e}")
-        raise Exception(e)
+    return create_retriever_tool(
+        store.as_retriever(),
+        "retriever_customer_uploaded_documents",
+        f"Use this tool **only** to answer questions about: {description}\n"
+        "Don't use this tool to answer anything else."
+    )

@@ -44,9 +44,10 @@ prompts:
     You just have to rewrite the query so that we could get more accurate and suitable answer from our indexed information database.
 
   generate_prompt: |
-    You are a beautiful answer generator. You are given a context.
+    You are a beautiful answer generator. You are given the user's question and a context.
+    question: {question}
     context: {context}
-    You need to generate the final answer based on the given context,
+    You need to generate the final answer to the question based on the given context,
     which would be easily readable and understandable by the user.
 
   verify_prompt: |

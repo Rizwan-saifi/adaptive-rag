@@ -7,6 +7,7 @@ from typing import Literal
 from langchain_core.prompts import PromptTemplate
 
 from src.config.settings import Config
+from src.core.config import settings
 from src.llms.provider import llm, structured_llm
 from src.models.state import State
 from src.models.verification_result import VerificationResult
@@ -32,7 +33,7 @@ def routing_tool(state: State) -> Literal["retriever", "general_llm", "web_searc
         return "web_search"
 
 
-def doc_tool(state: State) -> Literal["rewrite", "generate"]:
+def doc_tool(state: State) -> Literal["rewrite", "generate", "not_found"]:
     """
     Determine whether the query needs rewriting based on grading score.
 
@@ -40,14 +41,17 @@ def doc_tool(state: State) -> Literal["rewrite", "generate"]:
         state (State): The current state of the graph.
 
     Returns:
-        The next node: "generate" if score is "yes", otherwise "rewrite".
+        The next node: "generate" if score is "yes", "rewrite" to retry,
+        or "not_found" once the rewrite limit is reached.
     """
-    score = state["binary_score"]
-    print(f"[doc_tool] Routing based on score: {score}")
+    score = (state["binary_score"] or "").strip().lower()
+    rewrites = state.get("rewrite_count") or 0
+    print(f"[doc_tool] Routing based on score: {score} (rewrites so far: {rewrites})")
     if score == "yes":
         return "generate"
-    else:
-        return "rewrite"
+    if rewrites >= settings.MAX_REWRITES:
+        return "not_found"
+    return "rewrite"
 
 
 def verify_answer(state: State) -> Literal["__end__", "generate"]:

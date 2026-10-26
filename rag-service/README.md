@@ -290,6 +290,9 @@ GROQ_API_KEY=...        # https://console.groq.com/keys
 
 # Web search
 TAVILY_API_KEY=...
+
+# Required: verifies login tokens; must equal JWT_SECRET in auth-gateway/.env
+JWT_SECRET=...
 ```
 
 | Provider    | Default model           | Embeddings            |

@@ -25,3 +25,4 @@ pypdf
 langchain-anthropic<1
 langchain-google-genai<3
 fastembed
+PyJWT

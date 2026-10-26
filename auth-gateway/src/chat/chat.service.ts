@@ -9,17 +9,15 @@ interface PythonResponse {
 export class ChatService {
   private readonly logger = new Logger(ChatService.name);
 
-  async ask(query: string, sessionId?: string): Promise<string> {
-    const body: Record<string, string> = { query };
-    if (sessionId) body.session_id = sessionId;
+  async ask(query: string, jwt: string): Promise<string> {
     this.logger.log(`Sending request to Python service: ${query}`);
 
     let resp: Response;
     try {
       resp = await fetch(config.pythonRagUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+        body: JSON.stringify({ query, session_id: jwt }),
       });
     } catch (e) {
       throw new InternalServerErrorException(`Failed to contact Python service: ${e}`);

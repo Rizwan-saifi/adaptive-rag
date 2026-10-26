@@ -13,7 +13,7 @@ from src.rag.retriever_setup import retriever_chain
 from src.tools.common_tools import enhance_description_with_llm
 
 
-def documents(description: str, file: UploadFile = File(...)):
+def documents(user_id: str, description: str, file: UploadFile = File(...)):
     """
     Process and upload a document for RAG.
 
@@ -21,6 +21,7 @@ def documents(description: str, file: UploadFile = File(...)):
     and stores them in the vector database.
 
     Args:
+        user_id: Owner of the document.
         description: User-provided document description.
         file: The uploaded file (PDF or TXT).
 
@@ -64,16 +65,12 @@ def documents(description: str, file: UploadFile = File(...)):
     finally:
         os.unlink(tmp_path)
 
+    # Record the real file name rather than the temp path, for source attribution
+    for doc in docs:
+        doc.metadata["source"] = filename
+
     # Enhance description using LLM
     description_llm = enhance_description_with_llm(description)
-
-    # Save enhanced description
-    with open("description.txt", "w", encoding="utf-8") as f:
-        f.write(description_llm)
-
-    with open("description.txt", "r", encoding="utf-8") as f:
-        print("Document description from storage:")
-        print(f.read())
 
     # Split documents into chunks
     splitter = RecursiveCharacterTextSplitter(
@@ -82,8 +79,4 @@ def documents(description: str, file: UploadFile = File(...)):
     )
     chunks = splitter.split_documents(docs)
 
-    return retriever_chain(chunks)
-
-
-
-
+    return retriever_chain(user_id, chunks, description_llm)

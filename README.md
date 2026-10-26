@@ -65,6 +65,7 @@ LLM_PROVIDER=groq            # groq | openai | gemini | anthropic
 EMBEDDING_PROVIDER=local     # local | openai | gemini
 GROQ_API_KEY=...             # key for the provider you chose
 TAVILY_API_KEY=...           # web search
+JWT_SECRET=...               # required; same value as in auth-gateway/.env
 ```
 
 See [`rag-service/README.md`](rag-service/README.md) for all options, and

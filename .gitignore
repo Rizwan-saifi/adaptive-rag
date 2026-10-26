@@ -14,12 +14,10 @@
 # Runtime data
 *.log
 *.db
-rag-service/description.txt
 
 # IDE
 .idea/
 **/.idea/
 .vscode/
 
-# Legacy Rust BFF (replaced by auth-gateway)
-Agentic-BFF/
+
